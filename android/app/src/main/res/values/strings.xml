@@ -215,6 +215,7 @@
     <string name="listening_mode_adaptive_description">Dynamically adjust external noise</string>
     <string name="listening_mode_noise_cancellation_description">Blocks out external sounds</string>
     <string name="unlock_advanced_features">Unlock advanced features</string>
+    <string name="premium_active">Unlocked</string>
     <string name="buy_price">Buy %s</string>
     <string name="restore_purchases">Restore purchases</string>
     <string name="ear_detection_description">Automatically stop playing audio when you take them off, and resume playback when you put them back on.</string>
