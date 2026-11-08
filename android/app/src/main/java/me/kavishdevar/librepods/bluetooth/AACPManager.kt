@@ -20,8 +20,11 @@
 
 package me.kavishdevar.librepods.bluetooth
 
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import me.kavishdevar.librepods.data.Capability
+import me.kavishdevar.librepods.utils.RtBuddy
 import me.kavishdevar.librepods.data.CustomEq
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -235,6 +238,9 @@ class AACPManager {
         fun onControlCommandReceived(controlCommand: ByteArray)
         fun onDeviceInformationReceived(deviceInformation: AirPodsInformation)
         fun onHeadTrackingReceived(headTracking: ByteArray)
+
+        /** AirPods Pro 3 heart rate, decoded from the RTBuddy sensor stream. */
+        fun onHeartRateReceived(bpm: Int) {}
         fun onUnknownPacketReceived(packet: ByteArray)
         fun onProximityKeysReceived(proximityKeys: ByteArray)
         fun onStemPressReceived(stemPress: ByteArray)
@@ -484,6 +490,33 @@ class AACPManager {
             }
 
             Opcodes.HEADTRACKING -> {
+                // Heart rate shares this opcode (RTBuddy sensor stream) and its samples are
+                // ~18 bytes, so the short-packet guard below used to discard every one.
+                val bpm = RtBuddy.heartRateBpm(packet)
+                if (bpm != null) {
+                    Log.i(TAG, "Heart rate sample: $bpm bpm")
+                    callback?.onHeartRateReceived(bpm)
+                    return
+                }
+                val sensorCommand = RtBuddy.sensorCommand(packet)
+                if (sensorCommand != null) {
+                    Log.d(TAG, "RTBuddy sensor frame, service=${sensorCommand.service}, payload=${sensorCommand.payload?.size ?: 0} bytes")
+                } else {
+                    // Not a command frame: most likely a start/command ACK for a service we
+                    // subscribed to. Throttled, because these are rare but noisy to print.
+                    val now = System.currentTimeMillis()
+                    if (now - lastBuddyFrameLogAt > 100) {
+                        lastBuddyFrameLogAt = now
+                        RtBuddy.parseFrame(packet)?.let { frame ->
+                            Log.d(
+                                TAG,
+                                "RTBuddy non-command frame descriptor=0x${"%08X".format(frame.descriptor)} " +
+                                    "data=${frame.data.take(32).joinToString(" ") { "%02X".format(it) }}"
+                            )
+                        }
+                    }
+                }
+
                 if (packet.size < 70) {
                     Log.w(
                         TAG, "Received HEADTRACKING packet too short: ${
@@ -660,6 +693,45 @@ class AACPManager {
 
     fun sendStartHeadTracking(): Boolean {
         return sendDataPacket(createStartHeadTrackingPacket())
+    }
+
+    private var rtBuddySequence = 0x121
+    private var lastBuddyFrameLogAt = 0L
+
+    /**
+     * Ask the pods to report the heart-rate sensor service at 1 Hz.
+     *
+     * Byte-identical in shape to [createStartHeadTrackingPacket] — same
+     * SensorDataWX.service_settings message — with service 19 (HEARTRATE) instead of
+     * 14/16 (ACTIVITY/DEVMOTION6) and a 1 s interval instead of 40 ms.
+     */
+    fun createStartHeartRatePacket(
+        intervalMicros: Int = 1_000_000,
+        service: Int = RtBuddy.SERVICE_HEARTRATE_V2
+    ): ByteArray {
+        val opcode = byteArrayOf(Opcodes.HEADTRACKING, 0x00)
+        val body = RtBuddy.sensorIntervalSetting(
+            seq = rtBuddySequence++,
+            service = service,
+            intervalMicros = intervalMicros
+        )
+        return opcode + RtBuddy.frame(RtBuddy.DESCRIPTOR_SENSOR_DATA_WX, body)
+    }
+
+    /**
+     * Note: this firmware ACKs service 20 (HEARTRATEv2) and silently drops 19, so ask for
+     * 20 first and fall back to 19 for older models.
+     */
+    fun sendStartHeartRate(intervalMicros: Int = 1_000_000): Boolean {
+        val packet = createStartHeartRatePacket(intervalMicros, RtBuddy.SERVICE_HEARTRATE_V2)
+        Log.i(TAG, "Subscribing to heart rate (v2): ${packet.joinToString(" ") { "%02X".format(it) }}")
+        val sent = sendDataPacket(packet)
+        Handler(Looper.getMainLooper()).postDelayed({
+            val legacy = createStartHeartRatePacket(intervalMicros, RtBuddy.SERVICE_HEARTRATE)
+            Log.i(TAG, "Subscribing to heart rate (v1 fallback)")
+            sendDataPacket(legacy)
+        }, 250L)
+        return sent
     }
 
     fun createStartHeadTrackingPacket(): ByteArray {

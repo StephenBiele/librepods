@@ -70,6 +70,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import me.kavishdevar.librepods.services.AirPodsService
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -140,6 +141,8 @@ fun AirPodsSettingsRoute(
     navigateToAdaptiveStrength: () -> Unit,
     navigateToEqualizer: () -> Unit,
     navigateToHeadTracking: () -> Unit,
+    navigateToPodsFinder: () -> Unit,
+    navigateToHeartRate: () -> Unit,
     navigateToAccessibility: () -> Unit,
     navigateToVersion: () -> Unit,
     navigateToTroubleshooting: () -> Unit,
@@ -185,6 +188,8 @@ fun AirPodsSettingsRoute(
             navigateToAdaptiveStrength = navigateToAdaptiveStrength,
             navigateToEqualizer = navigateToEqualizer,
             navigateToHeadTracking = navigateToHeadTracking,
+            navigateToPodsFinder = navigateToPodsFinder,
+            navigateToHeartRate = navigateToHeartRate,
             navigateToAccessibility = navigateToAccessibility,
             navigateToVersion = navigateToVersion,
             navigateToTroubleshooting = navigateToTroubleshooting,
@@ -227,6 +232,8 @@ fun AirPodsSettingsScreen(
         navigateToAdaptiveStrength: () -> Unit,
         navigateToEqualizer: () -> Unit,
         navigateToHeadTracking: () -> Unit,
+        navigateToPodsFinder: () -> Unit,
+        navigateToHeartRate: () -> Unit,
         navigateToAccessibility: () -> Unit,
         navigateToVersion: () -> Unit,
         navigateToTroubleshooting: () -> Unit,
@@ -542,6 +549,26 @@ fun AirPodsSettingsScreen(
                         onClick = navigateToHeadTracking
                     )
                 }
+            }
+
+            item(key = "spacer_heart_rate") { Spacer(modifier = Modifier.height(16.dp)) }
+            item(key = "heart_rate") {
+                val bpm by AirPodsService.heartRateBpm.collectAsState()
+                StyledListItem(
+                    name = stringResource(R.string.heart_rate),
+                    description = bpm?.let { "$it bpm" }
+                        ?: stringResource(R.string.heart_rate_no_data),
+                    onClick = navigateToHeartRate
+                )
+            }
+
+            item(key = "spacer_pods_finder") { Spacer(modifier = Modifier.height(16.dp)) }
+            item(key = "pods_finder") {
+                StyledListItem(
+                    name = stringResource(R.string.pods_finder),
+                    description = stringResource(R.string.pods_finder_short_description),
+                    onClick = navigateToPodsFinder
+                )
             }
 
             item(key = "spacer_dynamic_end_of_charge") { Spacer(modifier = Modifier.height(16.dp)) }
@@ -923,6 +950,20 @@ fun AirPodsSettingsScreen(
                                 )
                             }
                         }
+
+                        StyledButton(
+                            onClick = navigateToPodsFinder,
+                            backdrop = backdrop,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp)
+                                .widthIn(max = 200.dp)
+                        ) {
+                            Text(
+                                text = stringResource(R.string.pods_finder),
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
                     }
 
                     if (!BuildConfig.PLAY_BUILD) {
@@ -984,6 +1025,8 @@ fun AirPodsSettingsScreenPreviewApple() {
                 navigateToAccessibility = {},
                 navigateToVersion = {},
                 navigateToTroubleshooting = {},
+                navigateToPodsFinder = {},
+                navigateToHeartRate = {},
                 navigateToCallControlScreen = {},
                 navigateToMicrophoneSettings = {},
 
@@ -1031,6 +1074,8 @@ fun AirPodsSettingsScreenPreviewMaterial() {
                 navigateToAccessibility = {},
                 navigateToVersion = {},
                 navigateToTroubleshooting = {},
+                navigateToPodsFinder = {},
+                navigateToHeartRate = {},
                 navigateToCallControlScreen = {},
                 navigateToMicrophoneSettings = {},
 

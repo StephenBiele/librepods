@@ -31,6 +31,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import me.kavishdevar.librepods.utils.BluetoothCryptography
+import me.kavishdevar.librepods.utils.PodsFinder
 import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
 import kotlin.collections.iterator
@@ -111,6 +112,35 @@ class BLEManager(private val context: Context) {
     )
 
     private val cleanupHandler = Handler(Looper.getMainLooper())
+
+    private val scanWindowHandler = Handler(Looper.getMainLooper())
+    private val scanWindowRunnable = object : Runnable {
+        override fun run() {
+            processedAddresses.clear()
+            scanWindowHandler.postDelayed(this, scanWindowMs())
+        }
+    }
+
+    // The finder screen asks for faster reports while it is visible; everywhere else the
+    // scan stays on the 500 ms window so battery cost is unchanged.
+    @Volatile
+    private var fastScanMode = false
+
+    private fun scanWindowMs(): Long = if (fastScanMode) FAST_REPORT_DELAY_MS else SCAN_WINDOW_MS
+
+    /**
+     * Restart the scan with a shorter report window. Only call while the finder is on
+     * screen; leaving it must pass false to restore the normal cadence.
+     */
+    @SuppressLint("MissingPermission")
+    fun setFastScanMode(enabled: Boolean) {
+        if (fastScanMode == enabled) return
+        fastScanMode = enabled
+        Log.d(TAG, "Fast scan mode: $enabled")
+        if (mScanCallback != null) {
+            startScanning() // restarts with the new report delay
+        }
+    }
     private val cleanupRunnable = object : Runnable {
         override fun run() {
             cleanupStaleDevices()
@@ -153,7 +183,7 @@ class BLEManager(private val context: Context) {
                 .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
                 .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
                 .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
-                .setReportDelay(500L)
+                .setReportDelay(if (fastScanMode) FAST_REPORT_DELAY_MS else SCAN_WINDOW_MS)
                 .build()
 
             val manufacturerData = ByteArray(27)
@@ -187,6 +217,8 @@ class BLEManager(private val context: Context) {
             }
 
             mBluetoothLeScanner?.startScan(listOf(scanFilter), scanSettings, mScanCallback)
+            scanWindowHandler.removeCallbacks(scanWindowRunnable)
+            scanWindowHandler.postDelayed(scanWindowRunnable, SCAN_WINDOW_MS)
             Log.d(TAG, "BLE scanner started successfully")
 
             cleanupHandler.postDelayed(cleanupRunnable, CLEANUP_INTERVAL_MS)
@@ -205,6 +237,7 @@ class BLEManager(private val context: Context) {
             }
 
             cleanupHandler.removeCallbacks(cleanupRunnable)
+            scanWindowHandler.removeCallbacks(scanWindowRunnable)
         } catch (t: Throwable) {
             Log.e(TAG, "Error stopping BLE scanner", t)
         }
@@ -254,10 +287,6 @@ class BLEManager(private val context: Context) {
             val scanRecord = result.scanRecord ?: return
             val address = result.device.address
 
-            if (processedAddresses.contains(address)) {
-                return
-            }
-
             val manufacturerData = scanRecord.getManufacturerSpecificData(76) ?: return
             if (manufacturerData.size <= 20) return
 
@@ -268,6 +297,15 @@ class BLEManager(private val context: Context) {
                 }
                 verifiedAddresses.add(address)
                 Log.d(TAG, "RPA verified and added to trusted list: $address")
+            }
+
+            // Feed the finder/left-behind meter once the address is known to be ours, but
+            // before payload de-duplication: RSSI changes even when the bytes are identical,
+            // while a neighbour's AirPods must not move our meter.
+            PodsFinder.push(result.rssi)
+
+            if (processedAddresses.contains(address)) {
+                return
             }
 
             processedAddresses.add(address)
@@ -492,6 +530,11 @@ class BLEManager(private val context: Context) {
     companion object {
         private const val TAG = "AirPodsBLE"
         private const val CLEANUP_INTERVAL_MS = 10000L
+        // Matches the batch report delay: one dedupe window per scan report. The individual
+        // callback path never cleared it, so a device seen once stopped refreshing its status
+        // timestamp and could be declared gone while still advertising.
+        private const val SCAN_WINDOW_MS = 500L
+        private const val FAST_REPORT_DELAY_MS = 100L
         private const val STALE_DEVICE_TIMEOUT_MS = 15000L
         private const val LID_CLOSE_TIMEOUT_MS = 2500L
     }

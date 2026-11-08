@@ -42,7 +42,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import me.kavishdevar.librepods.R
 
-val sfProFamily = FontFamily(Font(R.font.sf_pro))
+// System font. The bundled SF Pro *Text* cut is drawn for small sizes and reads wide and
+// odd at display sizes (32-48sp), which is what made headings look stretched.
+val sfProFamily = FontFamily.SansSerif
 
 val AppleTypography = Typography().run {
     copy(
@@ -98,7 +100,7 @@ private fun robotoFlex(
     wght: Float = 400f,
     slnt: Float = 0f,
     grad: Float = 0f,
-    wdth: Float = 100f,
+    wdth: Float = 100f, // fixed at 100: widths above that visibly stretch the text
     xtra: Float = 468f,
     xopq: Float = 96f,
     yopq: Float = 79f,
@@ -110,7 +112,7 @@ private fun robotoFlex(
         fontProvider = provider,
         variationSettings = FontVariation.Settings(
             FontVariation.Setting("wght", wght),
-            FontVariation.Setting("wdth", wdth),
+            FontVariation.Setting("wdth", 100f),
             FontVariation.Setting("slnt", slnt),
             FontVariation.Setting("grad", grad),
             FontVariation.Setting("xtra", xtra),

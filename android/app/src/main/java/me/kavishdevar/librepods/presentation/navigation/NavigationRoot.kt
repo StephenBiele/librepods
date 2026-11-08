@@ -59,6 +59,8 @@ fun NavigationRoot(
 //        Screen.CameraControl -> stringResource(R.string.camera_control)
         Screen.Equalizer -> stringResource(R.string.equalizer)
         Screen.HeadTracking -> stringResource(R.string.head_tracking)
+        Screen.PodsFinder -> stringResource(R.string.pods_finder)
+        Screen.HeartRate -> stringResource(R.string.heart_rate)
         Screen.HearingAid -> stringResource(R.string.hearing_aid)
         Screen.HearingAidAdjustments -> stringResource(R.string.adjustments)
         Screen.HearingProtection -> stringResource(R.string.hearing_protection)

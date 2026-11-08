@@ -31,6 +31,8 @@ import me.kavishdevar.librepods.presentation.screens.LoadingScreen
 import me.kavishdevar.librepods.presentation.screens.LongPress
 import me.kavishdevar.librepods.presentation.screens.MicrophoneSettingsRoute
 import me.kavishdevar.librepods.presentation.screens.OpenSourceLicensesScreen
+import me.kavishdevar.librepods.presentation.screens.HeartRateScreen
+import me.kavishdevar.librepods.presentation.screens.PodsFinderScreen
 import me.kavishdevar.librepods.presentation.screens.PurchaseScreen
 import me.kavishdevar.librepods.presentation.screens.ReleaseNotesScreen
 import me.kavishdevar.librepods.presentation.screens.RenameScreen
@@ -106,6 +108,8 @@ fun AppNavGraph(
                                 navigateToAdaptiveStrength = { navigate(Screen.AdaptiveStrength) },
                                 navigateToEqualizer = { navigate(Screen.Equalizer) },
                                 navigateToHeadTracking = { navigate(Screen.HeadTracking) },
+                                navigateToPodsFinder = { navigate(Screen.PodsFinder) },
+                                navigateToHeartRate = { navigate(Screen.HeartRate) },
                                 navigateToAccessibility = { navigate(Screen.Accessibility) },
                                 navigateToVersion = { navigate(Screen.VersionInfo) },
                                 navigateToTroubleshooting = { navigate(Screen.Troubleshooting) },
@@ -141,6 +145,16 @@ fun AppNavGraph(
                         NavEntry(screen) {
                             if (!airPodsViewModel.isReady) LoadingScreen()
                             HeadTrackingScreen(airPodsViewModel, ::navigateToPurchase)
+                        }
+
+                    Screen.PodsFinder ->
+                        NavEntry(screen) {
+                            PodsFinderScreen()
+                        }
+
+                    Screen.HeartRate ->
+                        NavEntry(screen) {
+                            HeartRateScreen()
                         }
 
                     Screen.Accessibility ->

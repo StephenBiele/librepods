@@ -76,6 +76,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -135,6 +136,12 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.time.Duration.Companion.milliseconds
 
 private const val TAG = "AirPodsService"
+private const val LEFT_BEHIND_CHANNEL_ID = "left_behind_alerts"
+private const val LEFT_BEHIND_NOTIFICATION_ID = 42
+
+// How long the pods have to stay quiet before we call them "left behind". Long enough
+// to survive a walk to another room, short enough to be useful on the way out.
+private const val LEFT_BEHIND_GRACE_MS = 120_000L
 
 object ServiceManager {
     private var service: AirPodsService? = null
@@ -239,13 +246,51 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         init {
             System.loadLibrary("bluetooth_socket")
         }
+
+        @Volatile
+        private var instance: AirPodsService? = null
+
+        // Last decoded heart rate. Lives here (not on the instance) so screens can read it
+        // without binding to the service; the service writes, the UI collects.
+        private val _heartRateBpm = MutableStateFlow<Int?>(null)
+        val heartRateBpm: StateFlow<Int?> = _heartRateBpm.asStateFlow()
+
+        @Volatile
+        var lastHeartRateAt: Long = 0L
+            private set
+
+        /**
+         * Called by the finder screen while it is visible, so RSSI updates arrive ~10x/s
+         * instead of once per 500 ms window. No-op when the service is not running.
+         */
+        /** Ask for a fresh 1 Hz heart-rate stream (used when the heart rate page opens). */
+        fun startHeartRateStream() {
+            val service = instance ?: return
+            runCatching { service.aacpManager.sendStartHeartRate() }
+                .onFailure { Log.w(TAG, "Heart-rate stream start failed: ${it.message}") }
+        }
+
+        fun setFinderFastScan(enabled: Boolean) {
+            val service = instance ?: return
+            runCatching { service.bleManager.setFastScanMode(enabled) }
+                .onFailure { Log.w(TAG, "Finder fast scan unavailable: ${it.message}") }
+        }
     }
+
+    // Left-behind alert: an advert carries no timestamp, so remember when we last saw one
+    // and fire a notification once the pods have been quiet for the grace period.
+    private val leftBehindHandler = Handler(Looper.getMainLooper())
+    private var leftBehindRunnable: Runnable? = null
+    @Volatile
+    private var lastAdvertSeenAt: Long = 0L
 
     private val bleStatusListener = object : BLEManager.AirPodsStatusListener {
         @SuppressLint("NewApi")
         override fun onDeviceStatusChanged(
             device: BLEManager.AirPodsStatus, previousStatus: BLEManager.AirPodsStatus?
         ) {
+            lastAdvertSeenAt = System.currentTimeMillis()
+            cancelLeftBehindCheck()
             if (device.connectionState == "Disconnected" && BluetoothConnectionManager.aacpSocket?.isConnected != true) { // should never happen unless android messes up and sends us a stale broadcast
                 Log.d(TAG, "Seems no device has taken over, we will.")
                 val bluetoothManager = getSystemService(BluetoothManager::class.java)
@@ -279,6 +324,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         override fun onBroadcastFromNewAddress(device: BLEManager.AirPodsStatus) {
             Log.d(TAG, "New address detected")
+            // A sighting under a rotated address still proves the pods are here.
+            lastAdvertSeenAt = System.currentTimeMillis()
+            cancelLeftBehindCheck()
         }
 
         override fun onLidStateChanged(
@@ -347,10 +395,72 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         override fun onDeviceDisappeared() {
             Log.d(TAG, "All disappeared")
+            scheduleLeftBehindCheck()
             updateNotificationContent(
                 false
             )
         }
+    }
+
+    private fun cancelLeftBehindCheck() {
+        leftBehindRunnable?.let { leftBehindHandler.removeCallbacks(it) }
+        leftBehindRunnable = null
+    }
+
+    private fun scheduleLeftBehindCheck(delayMs: Long = LEFT_BEHIND_GRACE_MS) {
+        if (!sharedPreferences.getBoolean("left_behind_alerts", false)) return
+        cancelLeftBehindCheck()
+        val runnable = Runnable {
+            leftBehindRunnable = null
+            if (!sharedPreferences.getBoolean("left_behind_alerts", false)) return@Runnable
+            // Connected means the pods are with us. A later socket loss re-arms this check.
+            if (BluetoothConnectionManager.aacpSocket?.isConnected == true) return@Runnable
+            if (lastAdvertSeenAt == 0L) return@Runnable
+            val age = System.currentTimeMillis() - lastAdvertSeenAt
+            if (age < LEFT_BEHIND_GRACE_MS) {
+                // Adverts were still arriving when the timer fired: wait out the remainder
+                // rather than dropping the alert, which silently lost every departure that
+                // began while the pods were still nearby.
+                scheduleLeftBehindCheck(LEFT_BEHIND_GRACE_MS - age)
+                return@Runnable
+            }
+            postLeftBehindNotification(age)
+        }
+        leftBehindRunnable = runnable
+        leftBehindHandler.postDelayed(runnable, delayMs.coerceAtLeast(1_000L))
+    }
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    private fun postLeftBehindNotification(ageMs: Long) {
+        val notificationManager = getSystemService(NotificationManager::class.java) ?: return
+        val openApp = PendingIntent.getActivity(
+            this,
+            2,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val body = getString(R.string.left_behind_notification_text, formatAge(ageMs))
+        val notification = NotificationCompat.Builder(this, LEFT_BEHIND_CHANNEL_ID)
+            .setSmallIcon(R.drawable.airpods)
+            .setContentTitle(getString(R.string.left_behind_notification_title))
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(Notification.CATEGORY_REMINDER)
+            .setAutoCancel(true)
+            .setContentIntent(openApp)
+            .build()
+        try {
+            notificationManager.notify(LEFT_BEHIND_NOTIFICATION_ID, notification)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Could not post left-behind notification", t)
+        }
+    }
+
+    private fun formatAge(ageMs: Long): String = when {
+        ageMs < 60_000L -> "${ageMs / 1_000L} seconds"
+        ageMs < 3_600_000L -> "${ageMs / 60_000L} minutes"
+        else -> "${ageMs / 3_600_000L} hours"
     }
 
     fun isBluetoothSocketExempted(): Boolean {
@@ -367,6 +477,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     @SuppressLint("MissingPermission", "UnspecifiedRegisterReceiverFlag", "HardwareIds")
     override fun onCreate() {
         super.onCreate()
+        instance = this
         Log.i(TAG, "lib exempt worked: ${isBluetoothSocketExempted()}")
 
         sharedPreferencesLogs = getSharedPreferences("packet_logs", MODE_PRIVATE)
@@ -699,6 +810,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     aacpManager.disconnected()
                     BluetoothConnectionManager.aacpSocket = null
                     BluetoothConnectionManager.attSocket = null
+                    // Socket loss is the moment pods can start drifting away; the check no
+                    // longer bails out here and wait for a disconnect that already happened.
+                    scheduleLeftBehindCheck()
                 }
             }
         }
@@ -1072,6 +1186,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 )
             }
 
+            override fun onHeartRateReceived(bpm: Int) {
+                lastHeartRateAt = System.currentTimeMillis()
+                _heartRateBpm.value = bpm
+                Log.i(TAG, "Heart rate: $bpm bpm")
+            }
+
             @SuppressLint("NewApi")
             override fun onHeadTrackingReceived(headTracking: ByteArray) {
                 if (isHeadTrackingActive) {
@@ -1265,6 +1385,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             }
 
             if (newInEarData.contains(true) && inEarData == listOf(false, false)) {
+                // The PPG only streams while the pods are worn, and a subscription sent
+                // with the buds in the case never delivers samples — re-request on ear-in.
+                runCatching { aacpManager.sendStartHeartRate() }
+                    .onFailure { Log.w(TAG, "Heart-rate resubscribe failed: ${it.message}") }
                 connectAudio(this@AirPodsService, device)
                 justEnabledA2dp = true
                 registerA2dpConnectionReceiver()
@@ -1756,10 +1880,20 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             enableVibration(true)
         }
 
+        val leftBehindChannel = NotificationChannel(
+            LEFT_BEHIND_CHANNEL_ID,
+            "Left-behind alerts",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Tells you when your AirPods stop advertising nearby"
+            enableVibration(true)
+        }
+
         val notificationManager = getSystemService(NotificationManager::class.java)
         notificationManager.createNotificationChannel(disconnectedNotificationChannel)
         notificationManager.createNotificationChannel(connectedNotificationChannel)
         notificationManager.createNotificationChannel(socketFailureChannel)
+        notificationManager.createNotificationChannel(leftBehindChannel)
 
         val notificationSettingsIntent =
             Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
@@ -2672,6 +2806,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                         BluetoothConnectionManager.aacpSocket = socket
                         BluetoothConnectionManager.attSocket = attSocket
 
+                        // Heart rate only streams if a host subscribes to the sensor
+                        // service; the HRM_STATE control bit alone does not start it.
+                        runCatching { aacpManager.sendStartHeartRate() }
+                            .onFailure { Log.w(TAG, "Heart-rate subscribe failed: ${it.message}") }
+
                         // Create AirPodsInstance from stored config if available
                         if (airpodsInstance == null && config.airpodsModelNumber.isNotEmpty()) {
                             val model =
@@ -3103,6 +3242,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     @SuppressLint("MissingPermission")
     override fun onDestroy() {
         clearPacketLogs()
+        // No dangling timer firing against a dead service.
+        cancelLeftBehindCheck()
+        instance = null
         Log.d(TAG, "Service stopped is being destroyed for some reason!")
 
         sharedPreferences.unregisterOnSharedPreferenceChangeListener(this)
